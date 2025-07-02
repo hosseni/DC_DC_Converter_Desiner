@@ -3,7 +3,13 @@ from tkinter import ttk, messagebox, filedialog
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import numpy as np
+
 import json
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
+import tempfile
 
 class DCDCConverterDesigner:
     def __init__(self, root):
@@ -92,10 +98,23 @@ class DCDCConverterDesigner:
         # Component ratings
         self.ratings_frame = ttk.LabelFrame(self.output_frame, text="Component Ratings", padding=10)
         self.ratings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=5)
-        
+
+        # Add peak and average current labels
+        ratings_inner_frame = ttk.Frame(self.ratings_frame)
+        ratings_inner_frame.pack(fill="x", pady=(0, 5))
+        ttk.Label(ratings_inner_frame, text="Inductor Current (avg):").grid(row=0, column=0, sticky="e", padx=2)
+        self.inductor_avg_label = ttk.Label(ratings_inner_frame, text="", width=10)
+        self.inductor_avg_label.grid(row=0, column=1, sticky="w", padx=2)
+        ttk.Label(ratings_inner_frame, text="A").grid(row=0, column=2, sticky="w")
+
+        ttk.Label(ratings_inner_frame, text="Inductor Current (peak):").grid(row=1, column=0, sticky="e", padx=2)
+        self.inductor_peak_label = ttk.Label(ratings_inner_frame, text="", width=10)
+        self.inductor_peak_label.grid(row=1, column=1, sticky="w", padx=2)
+        ttk.Label(ratings_inner_frame, text="A").grid(row=1, column=2, sticky="w")
+
         self.ratings_text = tk.Text(self.ratings_frame, height=8, width=40, wrap=tk.WORD)
         self.ratings_text.pack(fill="both", expand=True)
-        
+
         # Configure grid weights
         self.output_frame.grid_rowconfigure(0, weight=1)
         self.output_frame.grid_columnconfigure(0, weight=1)
@@ -302,7 +321,7 @@ class DCDCConverterDesigner:
         # Clear previous results
         self.results_text.delete(1.0, tk.END)
         self.ratings_text.delete(1.0, tk.END)
-        
+
         # Display basic results
         self.results_text.insert(tk.END, f"Converter Type: {design['type']}\n\n")
         self.results_text.insert(tk.END, "Design Parameters:\n")
@@ -311,15 +330,21 @@ class DCDCConverterDesigner:
         self.results_text.insert(tk.END, f"• Output Current: {params['iout']:.2f} A\n")
         self.results_text.insert(tk.END, f"• Switching Frequency: {params['fsw']/1000:.1f} kHz\n")
         self.results_text.insert(tk.END, f"• Efficiency: {params['efficiency']*100:.1f}%\n\n")
-        
+
         self.results_text.insert(tk.END, "Calculated Values:\n")
         self.results_text.insert(tk.END, f"• Duty Cycle: {params['duty_cycle']:.3f}\n")
         self.results_text.insert(tk.END, f"• Input Current: {params['input_current']:.3f} A\n")
         self.results_text.insert(tk.END, f"• Inductor Value: {params['inductor']*1e6:.2f} µH\n")
+        self.results_text.insert(tk.END, f"• Inductor Current (avg): {params['inductor_current_avg']:.2f} A\n")
+        self.results_text.insert(tk.END, f"• Inductor Current (peak): {params['inductor_current_peak']:.2f} A\n")
         self.results_text.insert(tk.END, f"• Capacitor Value: {params['capacitor']*1e6:.2f} µF\n")
         self.results_text.insert(tk.END, f"• Voltage Ripple: {params['voltage_ripple']/params['vout']*100:.2f}%\n")
         self.results_text.insert(tk.END, f"• Current Ripple: {params['current_ripple']/params['inductor_current_avg']*100:.1f}%\n")
-        
+
+        # Update peak and average current labels in ratings frame
+        self.inductor_avg_label.config(text=f"{params['inductor_current_avg']:.2f}")
+        self.inductor_peak_label.config(text=f"{params['inductor_current_peak']:.2f}")
+
         # Display component ratings
         self.ratings_text.insert(tk.END, "Component Ratings:\n")
         self.ratings_text.insert(tk.END, f"• Inductor: {params['inductor']*1e6:.2f} µH, {params['inductor_current_peak']:.2f} A peak\n")
@@ -497,8 +522,195 @@ class DCDCConverterDesigner:
         if not self.current_design:
             messagebox.showwarning("Warning", "No design to export. Please calculate first.")
             return
-            
-        messagebox.showinfo("Info", "This would generate a PDF report in a full implementation")
+
+        # Ask user for file path
+        filepath = filedialog.asksaveasfilename(
+            title="Export PDF Report",
+            defaultextension=".pdf",
+            filetypes=[("PDF Files", "*.pdf"), ("All Files", "*.*")]
+        )
+        if not filepath:
+            return
+
+        try:
+            design = self.current_design
+            params = design["parameters"]
+            c = canvas.Canvas(filepath, pagesize=letter)
+            width, height = letter
+            x = 1 * inch
+            y = height - 1 * inch
+
+            # --- PAGE 1: Graphs and Table ---
+            # Prepare 2x2 grid of graphs and table at the top
+            import matplotlib.pyplot as plt
+            graph_titles = [
+                ("Switch Control Signal", "duty"),
+                ("Inductor Current", "current"),
+                ("Input/Output Voltages", "voltage"),
+                ("Power Transfer", "all")
+            ]
+            fig_width_inch = (width - 2 * x) / inch
+            fig_height_inch = 7.5
+            fig, axs = plt.subplots(2, 2, figsize=(fig_width_inch, fig_height_inch))
+            plt.subplots_adjust(left=0.12, right=0.95, top=0.90, bottom=0.10, wspace=0.28, hspace=0.38)
+
+            orig_fig = self.figure
+            orig_graph_var = self.graph_var.get()
+            for idx, (title, mode) in enumerate(graph_titles):
+                self.graph_var.set(mode)
+                self.update_graphs()
+                src_ax = self.figure.get_axes()[0] if self.figure.get_axes() else None
+                if src_ax:
+                    row, col = divmod(idx, 2)
+                    ax = axs[row][col]
+                    for line in src_ax.get_lines():
+                        ax.plot(line.get_xdata(), line.get_ydata(), color=line.get_color(), label=line.get_label())
+                    for cobj in src_ax.collections:
+                        ax.add_collection(cobj)
+                    ax.set_title(title)
+                    ax.set_xlabel(src_ax.get_xlabel())
+                    ax.set_ylabel(src_ax.get_ylabel())
+                    ax.set_xlim(src_ax.get_xlim())
+                    ax.set_ylim(src_ax.get_ylim())
+                    ax.grid(True)
+                    if src_ax.get_legend():
+                        ax.legend()
+            self.figure = orig_fig
+            self.graph_var.set(orig_graph_var)
+
+            # Save the combined figure to a temporary file
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmpfile:
+                fig.savefig(tmpfile.name, bbox_inches='tight', dpi=150)
+                tmpfile.flush()
+                img_reader = ImageReader(tmpfile.name)
+
+                # Draw table at the top
+                y_img = height - 1 * inch
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(x, y_img, "Design Parameters:")
+                y_img -= 0.25 * inch
+                c.setFont("Helvetica", 11)
+                table_data = [
+                    ("Input Voltage (Vin)", f"{params['vin']:.2f} V"),
+                    ("Output Voltage (Vout)", f"{params['vout']:.2f} V"),
+                    ("Output Current (Iout)", f"{params['iout']:.2f} A"),
+                    ("Switching Frequency", f"{params['fsw']/1000:.1f} kHz"),
+                    ("Efficiency", f"{params['efficiency']*100:.1f}%"),
+                    ("Duty Cycle", f"{params['duty_cycle']:.3f}"),
+                    ("Inductor (L)", f"{params['inductor']*1e6:.2f} µH"),
+                    ("Capacitor (C)", f"{params['capacitor']*1e6:.2f} µF"),
+                    ("Voltage Ripple", f"{params['voltage_ripple']/params['vout']*100:.2f}%"),
+                    ("Current Ripple", f"{params['current_ripple']/params['inductor_current_avg']*100:.1f}%")
+                ]
+                col1_x = x + 0.2*inch
+                col2_x = x + 2.5*inch
+                row_height = 0.19 * inch
+                c.setFont("Helvetica-Bold", 11)
+                c.drawString(col1_x, y_img, "Parameter")
+                c.drawString(col2_x, y_img, "Value")
+                y_img -= row_height
+                c.setFont("Helvetica", 11)
+                for label, value in table_data:
+                    c.drawString(col1_x, y_img, label)
+                    c.drawString(col2_x, y_img, value)
+                    y_img -= row_height
+                y_img -= 0.1 * inch
+                # Draw the 2x2 grid of graphs centered
+                img_width = width - 2 * x
+                img_height = fig_height_inch * inch
+                img_x = x
+                img_y = y_img - img_height
+                c.drawImage(img_reader, img_x, img_y, width=img_width, height=img_height, preserveAspectRatio=True, anchor='nw')
+
+            c.setFont("Helvetica-Oblique", 10)
+            c.drawString(x, 0.7 * inch, "Report generated by DC-DC Converter Designer")
+            c.showPage()
+
+            # --- PAGE 2: Textual Details ---
+            y = height - 1 * inch
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(x, y, "DC-DC Converter Design Report")
+            y -= 0.4 * inch
+
+            c.setFont("Helvetica", 12)
+            c.drawString(x, y, f"Converter Type: {design['type']}")
+            y -= 0.3 * inch
+
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(x, y, "Design Parameters:")
+            y -= 0.22 * inch
+            c.setFont("Helvetica", 11)
+            c.drawString(x, y, f"Input Voltage: {params['vin']:.2f} V")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Output Voltage: {params['vout']:.2f} V")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Output Current: {params['iout']:.2f} A")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Switching Frequency: {params['fsw']/1000:.1f} kHz")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Efficiency: {params['efficiency']*100:.1f}%")
+            y -= 0.3 * inch
+
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(x, y, "Calculated Values:")
+            y -= 0.22 * inch
+            c.setFont("Helvetica", 11)
+            c.drawString(x, y, f"Duty Cycle: {params['duty_cycle']:.3f}")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Input Current: {params['input_current']:.3f} A")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Inductor Value: {params['inductor']*1e6:.2f} µH")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Inductor Current (avg): {params['inductor_current_avg']:.2f} A")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Inductor Current (peak): {params['inductor_current_peak']:.2f} A")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Capacitor Value: {params['capacitor']*1e6:.2f} µF")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Voltage Ripple: {params['voltage_ripple']/params['vout']*100:.2f}%")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Current Ripple: {params['current_ripple']/params['inductor_current_avg']*100:.1f}%")
+            y -= 0.3 * inch
+
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(x, y, "Component Ratings:")
+            y -= 0.22 * inch
+            c.setFont("Helvetica", 11)
+            c.drawString(x, y, f"Inductor: {params['inductor']*1e6:.2f} µH, {params['inductor_current_peak']:.2f} A peak")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Capacitor: {params['capacitor']*1e6:.2f} µF, {params['vout']:.1f} V")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Switch: {params['vin']:.1f} V, {params['switch_current_peak']:.2f} A")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Diode: {max(params['vin'], abs(params['vout'])):.1f} V, {params['diode_current_peak']:.2f} A")
+            y -= 0.3 * inch
+
+            # Add more details to the report
+            y -= 0.1 * inch
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(x, y, "Additional Details:")
+            y -= 0.22 * inch
+            c.setFont("Helvetica", 11)
+            c.drawString(x, y, f"Input Power: {params['vin'] * params['input_current']:.2f} W")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Output Power: {params['vout'] * params['iout']:.2f} W")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Estimated Efficiency: {params['efficiency']*100:.2f}%")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Switching Frequency: {params['fsw']:.0f} Hz")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Inductor Ripple Current: {params['current_ripple']:.4f} A")
+            y -= 0.18 * inch
+            c.drawString(x, y, f"Output Voltage Ripple: {params['voltage_ripple']:.4f} V")
+            y -= 0.3 * inch
+
+            c.setFont("Helvetica-Oblique", 10)
+            c.drawString(x, 0.7 * inch, "Report generated by DC-DC Converter Designer")
+
+            c.save()
+            messagebox.showinfo("Success", f"PDF report exported successfully to:\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export PDF report:\n{str(e)}")
         
     def show_help(self):
         help_text = """DC-DC Converter Designer Help
