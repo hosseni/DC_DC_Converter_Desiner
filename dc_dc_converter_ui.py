@@ -40,7 +40,7 @@ class DCDCConverterDesigner:
         self.setup_input_controls()
         self.setup_output_controls()
         self.setup_graph_controls()
-        
+    ####################################################
     def setup_input_controls(self):
         # Converter type selection
         ttk.Label(self.input_frame, text="Converter Type:").grid(row=0, column=0, sticky="e", pady=2)
@@ -48,7 +48,7 @@ class DCDCConverterDesigner:
         self.converter_type.grid(row=0, column=1, pady=2, sticky="w")
         self.converter_type.current(0)
         self.converter_type.bind("<<ComboboxSelected>>", self.on_converter_change)
-        
+
         # Input parameters with ripple specifications
         self.params = {
             "input_voltage": {"label": "Input Voltage (Vin)", "unit": "V", "default": "12", "row": 1},
@@ -59,7 +59,7 @@ class DCDCConverterDesigner:
             "voltage_ripple": {"label": "Voltage Ripple", "unit": "%", "default": "1", "row": 6},
             "current_ripple": {"label": "Current Ripple", "unit": "%", "default": "30", "row": 7}
         }
-        
+
         self.entries = {}
         for key, param in self.params.items():
             ttk.Label(self.input_frame, text=param["label"]+":").grid(row=param["row"], column=0, sticky="e", pady=2)
@@ -69,23 +69,56 @@ class DCDCConverterDesigner:
             self.entries[key].insert(0, param["default"])
             self.entries[key].pack(side="left")
             ttk.Label(frame, text=param["unit"]).pack(side="left", padx=5)
-            
+##################################################################################
         # Calculated components display
         ttk.Label(self.input_frame, text="Calculated Components:").grid(row=8, column=0, columnspan=2, pady=(10,2), sticky="w")
-        
+
+        # Inductor value and unit selection
         ttk.Label(self.input_frame, text="Inductor (L):").grid(row=9, column=0, sticky="e", pady=2)
         self.inductor_value = ttk.Label(self.input_frame, text="", width=10)
         self.inductor_value.grid(row=9, column=1, sticky="w")
-        ttk.Label(self.input_frame, text="µH").grid(row=9, column=1, sticky="e")
-        
+        self.l_unit_var = tk.StringVar(value="µH")
+        self.l_unit_combo = ttk.Combobox(self.input_frame, textvariable=self.l_unit_var, values=["nH", "µH", "mH", "H"], width=4, state="readonly")
+        self.l_unit_combo.grid(row=9, column=1, sticky="e")
+        self.l_unit_combo.bind("<<ComboboxSelected>>", lambda e: self.calculate())
+
+        # Custom inductor entry
+        self.custom_l_var = tk.StringVar()
+        self.custom_l_entry = ttk.Entry(self.input_frame, textvariable=self.custom_l_var, width=10)
+        self.custom_l_entry.grid(row=9, column=2, sticky="w")
+        self.custom_l_unit_var = tk.StringVar(value="µH")
+        self.custom_l_unit_combo = ttk.Combobox(self.input_frame, textvariable=self.custom_l_unit_var, values=["nH", "µH", "mH", "H"], width=4, state="readonly")
+        self.custom_l_unit_combo.grid(row=9, column=3, sticky="w")
+        self.custom_l_unit_combo.bind("<<ComboboxSelected>>", lambda e: self.calculate())
+
+        # Capacitor value and unit selection
         ttk.Label(self.input_frame, text="Capacitor (C):").grid(row=10, column=0, sticky="e", pady=2)
         self.capacitor_value = ttk.Label(self.input_frame, text="", width=10)
         self.capacitor_value.grid(row=10, column=1, sticky="w")
-        ttk.Label(self.input_frame, text="µF").grid(row=10, column=1, sticky="e")
-            
+        self.c_unit_var = tk.StringVar(value="µF")
+        self.c_unit_combo = ttk.Combobox(self.input_frame, textvariable=self.c_unit_var, values=["nF", "µF", "mF", "F"], width=4, state="readonly")
+        self.c_unit_combo.grid(row=10, column=1, sticky="e")
+        self.c_unit_combo.bind("<<ComboboxSelected>>", lambda e: self.calculate())
+
+        # Custom capacitor entry
+        self.custom_c_var = tk.StringVar()
+        self.custom_c_entry = ttk.Entry(self.input_frame, textvariable=self.custom_c_var, width=10)
+        self.custom_c_entry.grid(row=10, column=2, sticky="w")
+        self.custom_c_unit_var = tk.StringVar(value="µF")
+        self.custom_c_unit_combo = ttk.Combobox(self.input_frame, textvariable=self.custom_c_unit_var, values=["nF", "µF", "mF", "F"], width=4, state="readonly")
+        self.custom_c_unit_combo.grid(row=10, column=3, sticky="w")
+        self.custom_c_unit_combo.bind("<<ComboboxSelected>>", lambda e: self.calculate())
+#######################################################################
+
+        # Checkbox to use custom values
+        self.use_custom_lc = tk.BooleanVar()
+        self.custom_lc_check = ttk.Checkbutton(self.input_frame, text="Use Custom L/C", variable=self.use_custom_lc, command=self.calculate)
+        self.custom_lc_check.grid(row=11, column=0, columnspan=2, sticky="w")
+
         # Buttons
-        ttk.Button(self.input_frame, text="Calculate", command=self.calculate).grid(row=11, column=0, columnspan=2, pady=10)
-        
+        ttk.Button(self.input_frame, text="Calculate", command=self.calculate).grid(row=12, column=0, columnspan=2, pady=10)
+
+        ##################################################
     def setup_output_controls(self):
         # Results display
         self.results_text = tk.Text(self.output_frame, height=15, width=40, wrap=tk.WORD)
@@ -216,12 +249,21 @@ class DCDCConverterDesigner:
         except ValueError as e:
             messagebox.showerror("Input Error", str(e))
             return False, None
-            
+
+#############################################################
+    def get_lc_multiplier(self, unit):
+        # Helper for unit conversion
+        return {
+            "nH": 1e-9, "µH": 1e-6, "mH": 1e-3, "H": 1,
+            "nF": 1e-9, "µF": 1e-6, "mF": 1e-3, "F": 1
+        }.get(unit, 1e-6)
+
+    #####################################################################################
     def calculate(self):
         valid, values = self.validate_inputs()
         if not valid:
             return
-            
+
         conv_type = self.converter_type.get()
         vin = values["input_voltage"]
         vout = values["output_voltage"]
@@ -230,7 +272,7 @@ class DCDCConverterDesigner:
         eta = values["efficiency"]
         vripple_pct = values["voltage_ripple"] / 100  # Convert to ratio
         iripple_pct = values["current_ripple"] / 100  # Convert to ratio
-        
+
         # Calculate duty cycle
         if conv_type == "Buck":
             d = vout / (vin * eta)
@@ -238,7 +280,7 @@ class DCDCConverterDesigner:
             d = 1 - (vin * eta / vout)
         elif conv_type == "Buck-Boost":
             d = vout / (vout - vin * eta) if vout < 0 else vout / (vin * eta + vout)
-        
+
         # Calculate currents
         if conv_type == "Buck":
             iin = iout * vout / (vin * eta)
@@ -249,7 +291,7 @@ class DCDCConverterDesigner:
         elif conv_type == "Buck-Boost":
             iin = iout * abs(vout) / (vin * eta)
             il_avg = iin / (1 - d)
-        
+
         # AUTO-CALCULATE INDUCTOR VALUE
         delta_il = il_avg * iripple_pct
         if conv_type == "Buck":
@@ -258,7 +300,7 @@ class DCDCConverterDesigner:
             l = vin * d / (fsw * delta_il)
         elif conv_type == "Buck-Boost":
             l = vin * d / (fsw * delta_il)
-        
+
         # AUTO-CALCULATE CAPACITOR VALUE
         delta_vout = vout * vripple_pct
         if conv_type == "Buck":
@@ -267,7 +309,28 @@ class DCDCConverterDesigner:
             c = iout * d / (fsw * delta_vout)
         elif conv_type == "Buck-Boost":
             c = iout * d / (fsw * delta_vout)
-        
+
+        # --- Use custom L/C if enabled ---
+       # --- Use custom L/C if enabled, with unit selection ---
+        use_custom = self.use_custom_lc.get()
+        l_display = l / self.get_lc_multiplier(self.l_unit_var.get())
+        c_display = c / self.get_lc_multiplier(self.c_unit_var.get())
+        if use_custom:
+            try:
+                l_custom = float(self.custom_l_var.get()) * self.get_lc_multiplier(self.custom_l_unit_var.get())
+                if l_custom > 0:
+                    l = l_custom
+                    l_display = float(self.custom_l_var.get())
+            except Exception:
+                pass
+            try:
+                c_custom = float(self.custom_c_var.get()) * self.get_lc_multiplier(self.custom_c_unit_var.get())
+                if c_custom > 0:
+                    c = c_custom
+                    c_display = float(self.custom_c_var.get())
+            except Exception:
+                pass
+
         # Calculate actual ripples
         if conv_type == "Buck":
             delta_il_actual = (vin - vout) * d / (fsw * l)
@@ -278,12 +341,12 @@ class DCDCConverterDesigner:
         elif conv_type == "Buck-Boost":
             delta_il_actual = vin * d / (fsw * l)
             delta_vout_actual = iout * d / (fsw * c)
-        
+
         # Peak currents
         il_peak = il_avg + delta_il_actual / 2
         iswitch_peak = il_peak
         idiode_peak = il_peak
-        
+
         # Store results
         self.current_design = {
             "type": conv_type,
@@ -305,15 +368,16 @@ class DCDCConverterDesigner:
                 "diode_current_peak": idiode_peak
             }
         }
-        
+
         # Update calculated values display
-        self.inductor_value.config(text=f"{l*1e6:.2f}")
-        self.capacitor_value.config(text=f"{c*1e6:.2f}")
-        
+        self.inductor_value.config(text=f"{l_display:.2f} {self.l_unit_var.get()}")
+        self.capacitor_value.config(text=f"{c_display:.2f} {self.c_unit_var.get()}")
+
+
         # Display results
         self.display_results()
         self.update_graphs()
-        
+    #####################################################################################
     def display_results(self):
         design = self.current_design
         params = design["parameters"]
